@@ -20,4 +20,41 @@ contract: 实现 run(program) -> (regs, cycles)
 
 
 def run(program):
-    raise NotImplementedError("从这里开始写")
+    regs = list(range(32))
+
+    def exec_prog(prog, mask):
+        cycles = 0
+        for inst in prog:
+            op = inst[0]
+
+            if op == "add":
+                k = inst[1]
+                for i, active in enumerate(mask):
+                    if active:
+                        regs[i] += k
+                cycles += 1
+
+            elif op == "mul":
+                k = inst[1]
+                for i, active in enumerate(mask):
+                    if active:
+                        regs[i] *= k
+                cycles += 1
+
+            elif op == "if_lt":
+                _, t, then_prog, else_prog = inst
+                then_mask = [active and regs[i] < t for i, active in enumerate(mask)]
+                else_mask = [active and regs[i] >= t for i, active in enumerate(mask)]
+
+                if any(then_mask):
+                    cycles += exec_prog(then_prog, then_mask)
+                if any(else_mask):
+                    cycles += exec_prog(else_prog, else_mask)
+
+            else:
+                raise ValueError(f"unknown instruction: {op}")
+
+        return cycles
+
+    cycles = exec_prog(program, [True] * 32)
+    return regs, cycles

@@ -47,8 +47,7 @@ make run/m0_env/02_device_query
 
 Session 1 讲座里提过“N 方过百万”这个例子。总计算量 `10^12` FLOP 在当代 GPU 上的运算时间大概是毫秒级，那为什么一个严格在线的串行算法仍然做不到几秒内跑完？从“延迟”和“吞吐”的角度考虑。
 
-答案：
-GPU 的高 TFLOPS 只能提高大量独立操作的总吞吐，串行算法无法并行计算，时延低不了；但可以同时执行多个串行算法提高吞吐量。
+答案：GPU 的高 TFLOPS 只能提高大量独立操作的总吞吐，串行算法无法并行计算，时延低不了；但可以同时执行多个串行算法提高吞吐量。
 
 ### prob 1.3 CONCEPT
 
@@ -65,8 +64,7 @@ GPU 的高 TFLOPS 只能提高大量独立操作的总吞吐，串行算法无�
 
 SIMD 与 SIMT 的区别？
 
-答案：
-Single Instruction, Multiple Data  和Single Instruction, Multiple Threads。主要是编程模型不同：前者程序员显式写“向量”，后者程序员写“线程”，硬件把线程组织成类似向量的方式执行。比如说，SIMD 没有 thread divergence 的抽象。
+答案：Single Instruction, Multiple Data  和Single Instruction, Multiple Threads。主要是编程模型不同：前者程序员显式写“向量”，后者程序员写“线程”，硬件把线程组织成类似向量的方式执行。比如说，SIMD 没有 thread divergence 的抽象。
 
 判断正误：NVIDIA GPU 在 Volta 之后每个线程有独立的 program counter，所以 branch divergence 不再有性能代价。
 
@@ -202,71 +200,53 @@ make run/m2_first_kernel/06_whoami
 
 1. `threadIdx = (3, 5, 0)` 的线性编号是多少？它在第几个 warp、warp 内第几个 lane？
 
-   答案：
+   答案：43；1；11
 
 2. 这个 block 一共占多少个 warp？
 
-   答案：
+   答案：2
 
 3. 若 `blockDim = (33, 1, 1)`，占几个 warp？这样配置浪费在哪里？
 
-   答案：
+   答案：2；第二个 wrap 剩下的 31 个 lane 槽位没有线程执行。
 
 ### prob 3.2 EXPERIMENT
 
 文件：`cuda/m3_simt/01_divergence.cu`
 
-两个 kernel 每线程计算量相同，分支划分不同：一个按 thread 编号奇偶分，一个按 warp 边界对齐分。
-
-先预测，再运行验证：
-
-```bash
-cd assignment01/cuda
-make run/m3_simt/01_divergence
-```
-
-| 版本 | 预测耗时 / 相对速度 | 实测耗时 / 相对速度 |
-| --- | --- | --- |
-| 按 thread 奇偶分 |  |  |
-| 按 warp 边界对齐分 |  |  |
-
 回答：
 
 1. 请解释实测比值。
 
-   答案：
+   答案：1.98。按奇偶划分会导致一个 warp 里的线程带不同mask分别走两种分支，两种分支执行是串行的。
 
 2. 若两个分支的计算量一大一小，按 thread 编号奇偶分的 kernel 和按 warp 边界对齐分的 kernel 的运行时间分别由什么决定？
 
-   答案：
+   答案：按奇偶的等于大分支+小分支；按warp的整体时间主要由大分支决定
 
 ### prob 3.3 EXPERIMENT
 
 文件：`cuda/m3_simt/02_sync_matters.cu`
 
-让每个 block 用 shared memory 把自己的 256 个元素倒序。按文件开头注释内容进行实验。
-
-```bash
-cd assignment01/cuda
-make run/m3_simt/02_sync_matters
-```
-
 回答：
 
 1. 为什么注释掉 sync 后代码不能正确地运行？
 
-   答案：
+   答案：sync确保block内所有thread都执行完毕。注释掉后，后面有数据依赖，所以就废了，读到了中间版本。
 
 2. Optional：注释掉 sync 后，翻转后的数组错的位置比较随机，但是有些位置一直是对的，试解释原因。
 
-   答案：
+   答案：如果读写双方落在同一个 warp，写通常会先作为同一条指令完成，再执行下一条读，所以这些位置更可能稳定正确。
 
 ### prob 3.4 CONCEPT
 
 `__syncthreads` 只能同步本 block 内的 threads，那需要全 grid 同步时，标准做法是什么？
 
-答案：
+答案：把要同步的前后逻辑拆成两个kernel，分别进行launch，中间加cudaDeviceSynchronize。
 
+### prob 3.5
+
+两版加法次数相同，差别主要在活跃线程在 warp 内的分布。interleaved 每轮用 tid % (2*s) 选线程，活跃 lane 很稀疏，同一个 warp 内大量 lane 被屏蔽，分支效率低，而且还有取模开销；contiguous 用 tid < s，活跃线程集中在低编号连续区域，前几轮能让若干 warp 满载工作，其余 warp 整体空闲，所以 SIMT 执行效率更高。
 
 ---
 
@@ -279,33 +259,19 @@ make run/m3_simt/02_sync_matters
 | 空间 | 谁可见 | 生命周期 | 片上 / 片外 | 谁管理 |
 | --- | --- | --- | --- | --- |
 | register | 单个线程 | 线程 | 片上 | 编译器 |
-| local |  |  |  |  |
-| shared |  |  |  |  |
-| global |  |  |  |  |
-| constant |  |  |  |  |
-| L1 / L2 cache |  |  |  |  |
+| local | 单个线程 | 线程 | 片外 | 编译器 |
+| shared | 同一 block | block | 片上 | 用户 |
+| global | 全部线程 / host | 程序显式释放前 | 片外 | 用户 |
+| constant | 全部线程只读 | 程序显式释放前 | 片外，带片上 cache | 用户 |
+| L1 / L2 cache | 硬件缓存 | 硬件决定 | 片上 | 硬件 |
 
 ### prob 4.3 MODIFY
 
 文件：`cuda/m4_memory/02_constant_coeff.cu`
 
-按文件头说明修改。测试命令：
-
-```bash
-cd assignment01/cuda
-make run/m4_memory/02_constant_coeff
-```
-
-记录：
-
-| 版本 | 耗时 |
-| --- | --- |
-| 原版本 |  |
-| constant memory 版本 |  |
-
 回答：constant cache 真正的优势在哪种访问模式？
 
-答案：
+答案：constant cache 真正的优势是 warp 内多个线程读取同一个只读地址时，可以把一次读取广播给多个 lane；比如所有线程在同一轮循环里都读同一个系数 `COEF[k]`。如果同一个 warp 里的线程各自读取不同地址，访问会被拆开/序列化，优势就不明显。
 
 
 ### prob 4.4 CONCEPT
@@ -314,31 +280,20 @@ make run/m4_memory/02_constant_coeff
 
 | 小题 | 判断 | 理由 |
 | --- | --- | --- |
-| local memory 的“local”指作用域私有，它实际上在片外显存里。 |  |  |
-| 对数组用运行期才知道的下标做索引，可能迫使它被放进 local memory。 |  |  |
+| local memory 的“local”指作用域私有，它实际上在片外显存里。 | √ |  |
+| 对数组用运行期才知道的下标做索引，可能迫使它被放进 local memory。 | √ | 如果编译器无法在编译期确定索引，就不能把数组完全拆成寄存器变量，可能会把线程私有数组 spill/放到 local memory。 |
 
 ### prob 4.6 MODIFY
 
 文件：`cuda/m4_memory/04_histogram_priv.cu`
 
-按要求修改代码。测试命令：
+试解释提速来自哪里。
 
-```bash
-cd assignment01/cuda
-make run/m4_memory/04_histogram_priv
-```
+naive: PASS  平均 4.7284 ms  (3.55 GB/s)
+priv : PASS  平均 0.0237 ms  (707.29 GB/s)
+naive / priv = 199.34x
 
-记录：
-
-| 版本 | 耗时 | 吞吐 |
-| --- | --- | --- |
-| naive |  |  |
-| privatized |  |  |
-
-回答：试解释提速来自哪里。
-
-答案：
-
+主要提速来自 atomic 竞争范围变小。naive 版本中，所有 block 的线程都直接竞争同一组 global histogram bucket，尤其数据分布集中时，同一个 bucket 上的全局 atomic 会非常拥挤。privatized 版本先把大范围的全局竞争拆成 block 内部竞争，最后只需要把每个 block 的 256 个 bucket 汇总到 global histogram，global atomic 次数大幅减少。另一方面，block 内统计阶段访问的是 shared memory，延迟和吞吐都比频繁访问 global memory 更好。
 
 ### prob 4.7 EXPERIMENT
 
@@ -351,13 +306,17 @@ cd assignment01/cuda
 make run/m4_memory/05_bandwidth
 ```
 
-| stride | 1 | 2 | 4 | 8 | 16 | 32 |
-| --- | --- | --- | --- | --- | --- | --- |
-| GB/s |  |  |  |  |  |  |
+stride  ms           GB/s
+1       0.0563       2382.9
+2       0.0622       2158.7
+4       0.0858       1564.9
+8       0.1435        935.3
+16      0.2693        498.3
+32      0.3064        438.1
 
 回答：观察数据变化趋势，并简析趋势的成因。
 
-答案：
+答案：stride 增大时，warp 内相邻线程读取的地址间隔变大，访问从连续合并逐渐变成分散访问，warp 级的 memory coalescing 变差，硬件需要发起更多 memory transaction，每个 transaction 里真正用到的数据比例下降。
 
 
 ### prob 4.8 EXPERIMENT
@@ -366,30 +325,27 @@ make run/m4_memory/05_bandwidth
 
 运行实验并记录数据。
 
-```bash
-cd assignment01/cuda
-make run/m4_memory/06_occupancy
-```
+NVIDIA H200 NVL：shared memory 228 KB / SM，最大常驻 2048 线程 / SM
 
-| shared memory / block (KB) |  |  |  |  |  |  |
-| --- | --- | --- | --- | --- | --- | --- |
-| 理论驻留 block / SM |  |  |  |  |  |  |
-| occupancy |  |  |  |  |  |  |
-| 实测带宽 (GB/s) |  |  |  |  |  |  |
+shared/block   理论 block/SM  occupancy   实测带宽
+     0.0 KB          8          100.0%     3231.3 GB/s
+    30.1 KB          7           87.5%     2921.6 GB/s
+    34.2 KB          6           75.0%     2620.2 GB/s
+    41.0 KB          5           62.5%     2283.1 GB/s
+    66.1 KB          3           37.5%     1486.5 GB/s
+   125.4 KB          1           12.5%      550.0 GB/s
+
+cudaOccupancyMaxPotentialBlockSize 建议（smem = 0 时）：blockSize = 1024
 
 回答：
 
-1. 用程序开头打印的“shared memory / SM”和“最大常驻线程 / SM”，手算其中一个的驻留 block 数和 occupancy，和 API 的结果对照。
-
-   答案：
-
 2. 带宽为什么随 occupancy 下降？用“延迟隐藏需要足够多的常驻 warp”组织你的解释。
 
-   答案：
+   答案：GPU 的 global memory（如 HBM）访问具有较高延迟，一个 warp 发起内存访问后，需要等待较多周期才能获得数据。如果 SM 中有足够多的常驻 warp，warp scheduler 可以在某个 warp 等待内存时切换执行其他 ready warp，从而隐藏 memory latency，让计算单元持续工作。随着 shared memory / block 增加，每个 SM 能同时驻留的 block 数减少，导致 resident warp 数下降，occupancy 降低。
 
 3. 表中带宽随 occupancy 单调下降，但明显不成正比：从 100% 到 75% 带宽掉了多少？从 37.5% 到 12.5% 又掉了多少？试解释这个差别。
 
-   答案：
+   答案：18.9% 和 63.0%。occupancy 的作用主要是提供足够多的 warp 来隐藏 latency，而不是直接提供等比例的计算资源，所以理论上就不是成正比。高 occupancy 区域存在冗余 warp，降低一些影响有限；低 occupancy 区域缺少足够 warp 隐藏 latency，进一步降低会导致性能快速下降。
 
 ---
 
@@ -399,30 +355,19 @@ make run/m4_memory/06_occupancy
 
 文件：`cuda/m5_async/01_timing_trap.cu`
 
-运行实验：
-
-```bash
-cd assignment01/cuda
-make run/m5_async/01_timing_trap
-```
-
-记录：
-
-| 计时方式 | 数值 | 具体测的是什么 |
-| --- | --- | --- |
-|  |  |  |
-|  |  |  |
-|  |  |  |
+host 计时、不等 GPU :     0.0042 ms
+host 计时、等 GPU   :     0.1204 ms
+cudaEvent 计时      :     0.1185 ms
 
 回答：
 
 1. 哪个数值可以当作 kernel 耗时写进报告？
 
-   答案：
+   答案：第 3 个，cudaEvent 计时。
 
 2. 另外两个各具体测的是什么？
 
-   答案：
+   答案：第 1 个只测到了 CPU 发起 kernel launch 的开销，因为 kernel launch 是异步的，host 不等 GPU 真正执行完就停表了。第 2 个测的是 CPU 视角时间，还包含 launch、同步等待等 CPU/GPU 交互开销以及排队执行开销。
 
 ### prob 5.2 CONCEPT
 
@@ -430,9 +375,9 @@ make run/m5_async/01_timing_trap
 
 | 小题 | 判断 | 理由 |
 | --- | --- | --- |
-| 同一个 stream 里的操作按提交顺序执行。 |  |  |
-| kernel 启动后，host 代码立刻继续往下执行。 |  |  |
-| unified memory 下，CPU 访问一页正被 GPU 占用的内存，会触发缺页与页迁移。 |  |  |
+| 同一个 stream 里的操作按提交顺序执行。 | √ |  |
+| kernel 启动后，host 代码立刻继续往下执行。 | √ |  |
+| unified memory 下，CPU 访问一页正被 GPU 占用的内存，会触发缺页与页迁移。 | √ |  |
 
 ---
 
@@ -444,9 +389,9 @@ make run/m5_async/01_timing_trap
 
 | 小题 | 判断 | 理由 |
 | --- | --- | --- |
-| tile 是显存里的一块可变区域，kernel 通过指针直接改写它。 |  |  |
-| 对 tile 的一次运算，如两个 tile 相加，由编译器映射到 block 内的多个线程上执行。 |  |  |
-| tile 模型与 SIMT 模型互斥，一个 CUDA 程序只能选一种。 |  |  |
+| tile 是显存里的一块可变区域，kernel 通过指针直接改写它。 | × |  |
+| 对 tile 的一次运算，如两个 tile 相加，由编译器映射到 block 内的多个线程上执行。 | √ |  |
+| tile 模型与 SIMT 模型互斥，一个 CUDA 程序只能选一种。 | × | kernel-level 才是互斥的，program-level 不互斥。 |
 
 ### prob 6.2 CONCEPT
 
@@ -471,10 +416,10 @@ def vec_add(a, b, c, TILE: ct.Constant[int]):
 
 |  | CUDA SIMT | cuTile | Triton |
 | --- | --- | --- | --- |
-| 并行单位 | block 里的 thread | block |  |
-| 编号 | `blockIdx` / `threadIdx` |  |  |
-| 数据分工 | 线程用全局下标来划分数据 |  |  |
-| 边界处理 | `if` 判断 |  |  |
+| 并行单位 | block 里的 thread | tile / block | program / block |
+| 编号 | `blockIdx` / `threadIdx` | `ct.bid()` 给 tile 编号 | `tl.program_id()` 给 program 编号 |
+| 数据分工 | 线程用全局下标来划分数据 | 以 tile 为单位，用 `tiled_view` 的 load/store 搬一整块数据 | program 用 block 起点加 `tl.arange` 生成一组 offsets，按块处理数据 |
+| 边界处理 | `if` 判断 | 由 tiled view / load/store 根据 tile 形状处理 | `tl.load` / `tl.store` 里的 `mask` |
 
 ### prob 6.3 CONCEPT
 
@@ -482,11 +427,11 @@ def vec_add(a, b, c, TILE: ct.Constant[int]):
 
 1. “每个线程对应哪个/些元素”由谁决定？
 
-   答案：
+   答案：cuTile 编译器/运行时
 
 2. 列出一些在 CUDA SIMT 版向量加法里一定会出现、这里完全没体现出的概念。
 
-   答案：
+   答案：`threadIdx`、`blockIdx`、全局线程编号计算、grid/block 维度、`if (i < n)` 边界判断、warp/lane、thread 到元素的手动映射、branch divergence 等。
 
 ---
 
@@ -517,16 +462,15 @@ uv run pytest tests/test_fused_op.py
 
 文件：`kernels/tilelang_copy2d.py`
 
-请根据代码注释填空。测试命令：
-
-```bash
-cd assignment01
-uv run pytest tests/test_tilelang.py -k copy2d
-```
-
 填完想一想：2.6 的四个空，行号、列号、边界保护、grid 尺寸，哪些在这里还有对应？没有对应的那个去哪了？
 
 答案：
+
+1. 行号列号 -> 变成 tile 的全局行列起点：行方向用 by * block_M，列方向用 bx * block_N；tile 内局部 i,j 由 T.Parallel 表达。
+
+2. 边界保护 -> 不再手写 `if (row < M && col < N)`，由 `T.copy`/编译器处理越界部分。
+
+3. grid 尺寸 -> T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128)
 
 
 ### prob 7.5 CONCEPT
@@ -535,25 +479,18 @@ uv run pytest tests/test_tilelang.py -k copy2d
 
 | 谁负责 | CUDA SIMT | cuTile | Triton | TileLang |
 | --- | --- | --- | --- | --- |
-| 线程到数据的映射 | 用户 |  |  |  |
-| 边界处理 | 用户 |  |  |  |
-| tile / block 尺寸的选择 | 用户 |  |  |  |
-| block 内同步 | 用户 |  |  |  |
+| 线程到数据的映射 | 用户 | 编译器/运行时 | 编译器负责把向量化 program 映射到线程，用户负责 program 到数据块的映射 | 编译器负责 `T.Parallel`/`T.copy` 到线程的映射，用户负责 tile 到数据块的映射 |
+| 边界处理 | 用户 | 编译器/运行时 | 用户写 `mask`，编译器按 mask 生成安全访存 | 编译器/`T.copy` 处理 |
+| tile / block 尺寸的选择 | 用户 | 用户 | 用户 | 用户 |
+| block 内同步 | 用户 | 编译器/运行时 | 编译器 | 编译器 |
 
 ### prob 7.6 FILL-IN
 
 文件：`kernels/tilelang_matmul.py`
 
-请根据代码注释填空。测试命令：
-
-```bash
-cd assignment01
-uv run pytest tests/test_tilelang.py -k matmul
-```
-
 填完回答：这五个空涉及到了 shared memory、寄存器 tile、流水，而 Triton 版 matmul，Bonus 的 `kernels/matmul_triton.py`，并未被显式指定，为什么？
 
-答案：
+答案：TODO
 
 
 ---

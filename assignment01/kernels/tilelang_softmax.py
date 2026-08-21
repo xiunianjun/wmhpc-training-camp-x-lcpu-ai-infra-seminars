@@ -27,6 +27,7 @@ from functools import lru_cache
 
 def make_softmax(M, N):
     BLOCK_N = 1 << (N - 1).bit_length()
+    BLOCK_M = 4
 
     @T.prim_func
     def main(
@@ -35,34 +36,36 @@ def make_softmax(M, N):
     ):
         with T.Kernel(
             T.ceildiv(N, N),
-            T.ceildiv(M, 1),  # 一行行算
+            T.ceildiv(M, BLOCK_M),
             threads=128,
         ) as (bx, by):
-            X_local = T.alloc_fragment((1, BLOCK_N), "float32")
-            M_local = T.alloc_fragment((1,), "float32")
-            S_local = T.alloc_fragment((1,), "float32")
+            X_local = T.alloc_fragment((BLOCK_M, BLOCK_N), "float32")
+            M_local = T.alloc_fragment((BLOCK_M,), "float32")
+            S_local = T.alloc_fragment((BLOCK_M,), "float32")
 
-            for i, j in T.Parallel(1, BLOCK_N):
+            for i, j in T.Parallel(BLOCK_M, BLOCK_N):
+                row = by * BLOCK_M + i
                 X_local[i, j] = T.if_then_else(
-                    j < N,
-                    X[by, j],
+                    row < M and j < N,
+                    X[row, j],
                     -T.infinity("float32"),
                 )
 
             T.reduce_max(X_local, M_local, dim=1)
 
-            for i, j in T.Parallel(1, BLOCK_N):
+            for i, j in T.Parallel(BLOCK_M, BLOCK_N):
                 X_local[i, j] = T.if_then_else(
                     j < N,
-                    T.exp(X_local[i, j] - M_local[0]),
+                    T.exp(X_local[i, j] - M_local[i]),
                     0.0,
                 )
 
             T.reduce_sum(X_local, S_local, dim=1)
 
-            for i, j in T.Parallel(1, BLOCK_N):
-                if j < N:
-                    Y[by, j] = X_local[i, j] / S_local[0]
+            for i, j in T.Parallel(BLOCK_M, BLOCK_N):
+                row = by * BLOCK_M + i
+                if row < M and j < N:
+                    Y[row, j] = X_local[i, j] / S_local[i]
 
     return main
 

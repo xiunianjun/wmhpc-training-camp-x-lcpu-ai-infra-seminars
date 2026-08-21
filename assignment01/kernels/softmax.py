@@ -18,5 +18,38 @@ import triton
 import triton.language as tl
 
 
+@triton.jit
+def _softmax_kernel(
+    x_ptr,
+    y_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    col = tl.arange(0, BLOCK_SIZE)
+    mask = col < N
+    offsets = row * N + col
+
+    x = tl.load(x_ptr + offsets, mask=mask, other=-float("inf"))
+
+    x_max = tl.max(x, 0)
+
+    x = tl.exp(x - x_max)
+
+    x_sum = tl.sum(x, 0)
+
+    y = x / x_sum
+
+    tl.store(y_ptr + offsets, y, mask)
+
+
 def softmax(x: torch.Tensor) -> torch.Tensor:
-    raise NotImplementedError("从这里开始写")
+    assert x.dim() == 2, "softmax 只接受 2D tensor"
+    x = x.contiguous()
+    y = torch.empty_like(x)
+    M, N = x.shape
+    BLOCK_SIZE = triton.next_power_of_2(N)
+    grid = (M,)
+    _softmax_kernel[grid](x, y, M, N, BLOCK_SIZE=BLOCK_SIZE)
+    return y

@@ -441,22 +441,11 @@ def vec_add(a, b, c, TILE: ct.Constant[int]):
 
 文件：`kernels/fused_op.py`
 
-按文件开头注释要求修改。
-
-```bash
-cd assignment01
-uv run pytest tests/test_fused_op.py
-```
-
 回答：
 
-1. 与 Module 2 里改 CUDA kernel 相比，这次的改动主要集中在 kernel 的什么部分？
+与 Module 2 里改 CUDA kernel 相比，这次的改动主要集中在 kernel 的什么部分？主体代码为什么一行都不用动？
 
-   答案：
-
-2. 主体代码为什么一行都不用动？
-
-   答案：
+答案：主要集中在 kernel 里的逐元素计算表达式。因为改前改后都是 elementwise 操作，输入输出形状和线程/program 到数据块的映射没有变。
 
 ### prob 7.4 FILL-IN
 
@@ -490,8 +479,16 @@ uv run pytest tests/test_fused_op.py
 
 填完回答：这五个空涉及到了 shared memory、寄存器 tile、流水，而 Triton 版 matmul，Bonus 的 `kernels/matmul_triton.py`，并未被显式指定，为什么？
 
-答案：TODO
+答案：TileLang 版里，A/B 的 shared memory tile、C 的 fragment 累加器、沿 K 维的 T.Pipelined 循环以及 T.copy/T.gemm 的顺序都由用户写出来。Triton 版虽然也有 BLOCK_M/BLOCK_N/BLOCK_K、num_stages 等参数，但代码层面主要表达的是 tl.load、tl.dot 和 tl.store；shared memory 的使用、寄存器 tile 的安排、同步和流水化由 Triton 编译器根据这些高层操作生成。
 
+
+### prob 7.8
+
+归约：编译器隐式处理，用户调用
+
+边界处理：用户指定 mask 和 if_then_else 参数
+
+按形状编译：两边都按形状/参数特化编译。Triton 里 N、BLOCK_SIZE 是 constexpr，BLOCK_SIZE 由 wrapper 根据 N 算出；TileLang 里 make_softmax(M, N) 生成对应形状的 prim_func，再 compile。区别是 TileLang 的 buffer shape 更显式写进类型，Triton 的形状更多体现在 constexpr 和 launch 参数里。
 
 ---
 
@@ -503,16 +500,14 @@ uv run pytest tests/test_fused_op.py
 
 | 小题 | 判断 | 理由 |
 | --- | --- | --- |
-| PTX 是 GPU 直接执行的机器码。 |  |  |
-| 只嵌入了 `sm_70` SASS 的可执行文件，能在 compute capability 9.0 的卡上运行。 |  |  |
-| 一个 fatbin 可以同时携带多个架构的 SASS 和 PTX。 |  |  |
-| JIT 编译由驱动在运行时完成。 |  |  |
+| PTX 是 GPU 直接执行的机器码。 | × | PTX 是 NVIDIA 的中间表示/虚拟 ISA，运行前还需要由 ptxas 或驱动 JIT 编译成对应架构的 SASS。 |
+| 只嵌入了 `sm_70` SASS 的可执行文件，能在 compute capability 9.0 的卡上运行。 | × | 要支持新架构通常需要嵌入对应 SASS，或携带 PTX 让驱动 JIT。 |
+| 一个 fatbin 可以同时携带多个架构的 SASS 和 PTX。 | √ | fatbin 可以打包多份 device code。 |
+| JIT 编译由驱动在运行时完成。 | √ | 当没有合适的 SASS、但 fatbin 中有可用 PTX 时，CUDA driver 会在运行时把 PTX JIT 编译成当前 GPU 可执行的 SASS。 |
 
 ### prob 8.2 EXPERIMENT Optional
 
 文件：`cuda/m0_env/01_hello.cu`
-
-两个编译实验，对象是 Module 0 的 `01_hello.cu`。
 
 1. 生成只含 `sm_90` SASS 的可执行文件并运行。如果你的卡本身就是 compute capability 9.0，先把 `ARCH_HIGH` 调成 100 或更高再 make。
 
@@ -522,7 +517,13 @@ uv run pytest tests/test_fused_op.py
    ./bin/m0_env/01_hello_sassonly
    ```
 
-   记录报错信息：
+   记录报错信息：当前机器是 H200（compute capability 9.0），所以实验时使用 `ARCH_HIGH=100` 生成只含 `sm_100` SASS 的版本。运行时报错：
+
+   ```text
+   CUDA error cudaErrorNoKernelImageForDevice at m0_env/01_hello.cu:11: no kernel image is available for execution on the device
+   ```
+
+   原因是 fatbin 里只有当前设备不能执行的 SASS，也没有可供驱动 JIT 的 PTX。
 
 2. 生成只含 `compute_75` PTX 的版本并运行。
 
@@ -534,10 +535,10 @@ uv run pytest tests/test_fused_op.py
 
    能正常运行吗？PTX 是在什么时候、由谁编译成这块卡的机器码的？
 
-   答案：
+   答案：能正常运行，打印出各个 block/thread 的 hello 信息。这个可执行文件只携带 `compute_75` PTX，没有当前 H200 对应的 SASS；程序启动 kernel 时，CUDA driver 在运行时把 PTX JIT 编译成当前 GPU 可执行的机器码。
 
 ### prob 8.3 CONCEPT Optional
 
 请简单说明 Runtime API 与 Driver API 各自的定位。`cudaMalloc` 属于哪个？
 
-答案：
+答案：Runtime API 是更高层、更常用的 C/C++ 接口，负责封装 context 管理、模块加载、kernel launch 等细节，典型函数名以 `cuda` 开头。Driver API 是更底层的接口，直接暴露 device、context、module、function 等对象，控制粒度更细，典型函数名以 `cu` 开头。`cudaMalloc` 属于 Runtime API。
